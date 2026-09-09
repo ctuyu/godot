@@ -30,6 +30,7 @@
 
 #include "jolt_soft_body_3d.h"
 
+#include "../capabilities/soft_body_capabilities.h"
 #include "../jolt_project_settings.h"
 #include "../misc/jolt_type_conversions.h"
 #include "../spaces/jolt_broad_phase_layer.h"
@@ -93,8 +94,22 @@ void JoltSoftBody3D::_space_changed() {
 }
 
 void JoltSoftBody3D::_add_to_space() {
-	if (unlikely(space == nullptr || !mesh.is_valid())) {
+	if (unlikely(space == nullptr)) {
 		return;
+	}
+
+	LocalVector<const CapabilitySpec *> active;
+	cap_collect_active(cap_state, active);
+
+	const int replace_count = cap_replace_count(active);
+	ERR_FAIL_COND_MSG(replace_count > 1, vformat("More than one geometry-replacing capability is active on '%s'. Only one capability may supply the vertices.", to_string()));
+
+	if (replace_count == 0) {
+		if (unlikely(!mesh.is_valid())) {
+			return;
+		}
+	} else if (mesh.is_valid()) {
+		WARN_PRINT(vformat("A geometry-replacing capability is active on '%s'; its mesh is ignored.", to_string()));
 	}
 
 	JPH::SoftBodySharedSettings *shared_settings = _create_shared_settings();
@@ -110,6 +125,8 @@ void JoltSoftBody3D::_add_to_space() {
 	jolt_settings->mCollisionGroup = JPH::CollisionGroup(nullptr, group_id, sub_group_id);
 	jolt_settings->mMaxLinearVelocity = JoltProjectSettings::max_linear_velocity;
 
+	cap_apply_body(cap_state, active, *jolt_settings);
+
 	JPH::Body *new_jolt_body = space->add_object(*this, *jolt_settings);
 	if (new_jolt_body == nullptr) {
 		return;
@@ -121,7 +138,7 @@ void JoltSoftBody3D::_add_to_space() {
 	jolt_settings = nullptr;
 }
 
-JPH::SoftBodySharedSettings *JoltSoftBody3D::_create_shared_settings() {
+bool JoltSoftBody3D::_build_mesh_geometry(JPH::SoftBodySharedSettings &r_settings) {
 	RenderingServer *rendering = RenderingServer::get_singleton();
 
 	// TODO: calling RenderingServer::mesh_surface_get_arrays() from the physics thread
@@ -129,17 +146,16 @@ JPH::SoftBodySharedSettings *JoltSoftBody3D::_create_shared_settings() {
 	// This method blocks on the main thread to return data, but the main thread may be
 	// blocked waiting on us in PhysicsServer3D::sync().
 	const Array mesh_data = rendering->mesh_surface_get_arrays(mesh, 0);
-	ERR_FAIL_COND_V(mesh_data.is_empty(), nullptr);
+	ERR_FAIL_COND_V(mesh_data.is_empty(), false);
 
 	const PackedInt32Array mesh_indices = mesh_data[RSE::ARRAY_INDEX];
-	ERR_FAIL_COND_V(mesh_indices.is_empty(), nullptr);
+	ERR_FAIL_COND_V(mesh_indices.is_empty(), false);
 
 	const PackedVector3Array mesh_vertices = mesh_data[RSE::ARRAY_VERTEX];
-	ERR_FAIL_COND_V(mesh_vertices.is_empty(), nullptr);
+	ERR_FAIL_COND_V(mesh_vertices.is_empty(), false);
 
-	JPH::SoftBodySharedSettings *settings = new JPH::SoftBodySharedSettings();
-	JPH::Array<JPH::SoftBodySharedSettings::Vertex> &physics_vertices = settings->mVertices;
-	JPH::Array<JPH::SoftBodySharedSettings::Face> &physics_faces = settings->mFaces;
+	JPH::Array<JPH::SoftBodySharedSettings::Vertex> &physics_vertices = r_settings.mVertices;
+	JPH::Array<JPH::SoftBodySharedSettings::Face> &physics_faces = r_settings.mFaces;
 
 	HashMap<Vector3, int> vertex_to_physics;
 
@@ -219,12 +235,36 @@ JPH::SoftBodySharedSettings *JoltSoftBody3D::_create_shared_settings() {
 	JPH::SoftBodySharedSettings::VertexAttributes vertex_attrib;
 	vertex_attrib.mCompliance = vertex_attrib.mShearCompliance = inverse_stiffness;
 
-	settings->CreateConstraints(&vertex_attrib, 1, JPH::SoftBodySharedSettings::EBendType::None);
+	r_settings.CreateConstraints(&vertex_attrib, 1, JPH::SoftBodySharedSettings::EBendType::None);
 	float multiplier = 1.0f - shrinking_factor;
-	for (JPH::SoftBodySharedSettings::Edge &e : settings->mEdgeConstraints) {
+	for (JPH::SoftBodySharedSettings::Edge &e : r_settings.mEdgeConstraints) {
 		e.mRestLength *= multiplier;
 	}
-	settings->Optimize();
+
+	return true;
+}
+
+JPH::SoftBodySharedSettings *JoltSoftBody3D::_create_shared_settings() {
+	LocalVector<const CapabilitySpec *> active;
+	cap_collect_active(cap_state, active);
+
+	// Fresh settings on every build. `derive` short-circuits over an object that
+	// already holds derived values, so reusing one would silently keep properties
+	// computed from the previous configuration.
+	JPH::SoftBodySharedSettings *settings = new JPH::SoftBodySharedSettings();
+
+	if (cap_replace_count(active) == 0) {
+		if (!_build_mesh_geometry(*settings)) {
+			delete settings;
+			return nullptr;
+		}
+	} else {
+		// A geometry-replacing capability supplies the vertices, so there is no
+		// mesh index space to translate through.
+		mesh_to_physics.clear();
+	}
+
+	cap_build_settings(cap_state, active, *settings, mesh_to_physics, mass);
 
 	return settings;
 }
@@ -325,6 +365,10 @@ void JoltSoftBody3D::_update_mass() {
 	}
 
 	pin_vertices(*this, pinned_vertices, mesh_to_physics, physics_vertices);
+
+	// The loop above rewrote every vertex, including the ones a capability pinned
+	// at build time. Re-apply them from the same source `contribute` used.
+	cap_pin_vertices(cap_state, physics_vertices);
 }
 
 void JoltSoftBody3D::_update_pressure() {
@@ -826,6 +870,83 @@ void JoltSoftBody3D::set_vertex_position(int p_index, const Vector3 &p_position)
 	physics_vertex.mPosition = JPH::Vec3(to_jolt_r(p_position) - center_of_mass);
 
 	_vertices_changed();
+}
+
+namespace {
+
+const CapProperty *find_cap_property(const CapabilitySpec &p_cap, const StringName &p_name) {
+	for (const CapProperty &candidate : p_cap.props) {
+		if (p_name == StringName(candidate.name)) {
+			return &candidate;
+		}
+	}
+
+	return nullptr;
+}
+
+} // namespace
+
+bool JoltSoftBody3D::set_extra_property(const StringName &p_name, const Variant &p_value) {
+	String error;
+
+	switch (cap_state_store(cap_state, p_name, p_value, &error)) {
+		case CapStoreResult::UNKNOWN_PREFIX: {
+			// Silent by contract: a caller probes a backend and falls back.
+			return false;
+		}
+		case CapStoreResult::REJECTED: {
+			ERR_FAIL_V_MSG(false, error);
+		}
+		case CapStoreResult::OK: {
+			// The value participates in the shared settings, which are immutable
+			// once a body holds them, so it only becomes observable on a rebuild.
+			_try_rebuild();
+			return true;
+		}
+	}
+
+	return false;
+}
+
+Variant JoltSoftBody3D::get_extra_property(const StringName &p_name) const {
+	const CapabilitySpec *cap = find_capability(p_name);
+	if (cap == nullptr) {
+		return Variant();
+	}
+
+	const CapProperty *prop = find_cap_property(*cap, p_name);
+	if (prop == nullptr || cap->get == nullptr) {
+		return Variant();
+	}
+
+	// Only a live-read key needs a body. Guarding every key here would make a
+	// serialiser read nothing back from the writable ones, which are the keys
+	// that carry `PROPERTY_USAGE_STORAGE`.
+	if (prop->live_read) {
+		ERR_FAIL_COND_V_MSG(!in_space(), Variant(), vformat("Failed to read '%s' of '%s'. Doing so without a physics space is not supported when using Jolt Physics. If this relates to a node, try adding the node to a scene tree first.", String(p_name), to_string()));
+
+		return cap->get(cap_state, jolt_body, p_name);
+	}
+
+	return cap->get(cap_state, nullptr, p_name);
+}
+
+TypedArray<Dictionary> JoltSoftBody3D::get_extra_property_list() const {
+	TypedArray<Dictionary> list;
+
+	// Every key of every capability, whether or not it is currently set: this is
+	// a discovery call, so an answer must be available before anything is set.
+	for (const CapabilitySpec *cap : all_capabilities()) {
+		for (const CapProperty &prop : cap->props) {
+			Dictionary entry;
+			entry["name"] = String(prop.name);
+			entry["type"] = prop.type;
+			entry["usage"] = prop.live_read ? (uint32_t)(PROPERTY_USAGE_DEFAULT & ~PROPERTY_USAGE_STORAGE) : (uint32_t)PROPERTY_USAGE_DEFAULT;
+			list.push_back(entry);
+		}
+	}
+
+	return list;
 }
 
 void JoltSoftBody3D::pin_vertex(int p_index) {

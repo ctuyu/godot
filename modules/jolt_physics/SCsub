@@ -1,6 +1,10 @@
 #!/usr/bin/env python
 from misc.utility.scons_hints import *
 
+import glob
+
+import jolt_builders
+
 Import("env")
 Import("env_modules")
 
@@ -168,11 +172,28 @@ env.modules_sources += thirdparty_obj
 module_obj = []
 
 env_jolt.add_source_files(module_obj, "*.cpp")
+env_jolt.add_source_files(module_obj, "capabilities/*.cpp")
 env_jolt.add_source_files(module_obj, "joints/*.cpp")
 env_jolt.add_source_files(module_obj, "misc/*.cpp")
 env_jolt.add_source_files(module_obj, "objects/*.cpp")
 env_jolt.add_source_files(module_obj, "shapes/*.cpp")
 env_jolt.add_source_files(module_obj, "spaces/*.cpp")
+
+if env["tests"]:
+    # The probe bodies read Jolt internals, so they must be compiled by this env.
+    # No file under `tests/` that the tests TU includes may see a Jolt header.
+    # `tests/SCsub` builds the doctest TU from a bare `env`, so `TESTS_ENABLED` is
+    # NOT defined there -- only the probe's own side may be guarded by it.
+    env_jolt.Append(CPPDEFINES=["TESTS_ENABLED"])
+    env_jolt.add_source_files(module_obj, "tests/*.cpp")
+
+# The guard test compares this list against the registry's own array, which is what
+# makes it a guard rather than a second hand-maintained list.
+cap_sources = sorted(glob.glob("capabilities/cap_*.cpp"))
+env_jolt.CommandNoCache(
+    "capabilities/cap_files.gen.h", env.Value(cap_sources), env.Run(jolt_builders.cap_files_builder)
+)
+
 env.modules_sources += module_obj
 
 # Needed to force rebuilding the module files when the thirdparty library is updated.

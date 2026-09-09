@@ -127,6 +127,12 @@ public:
 
 	static JoltPhysicsServer3D *get_singleton() { return singleton; }
 
+#ifdef TESTS_ENABLED
+	// The capability probe seam (`tests/soft_body_cap_probe.cpp`) reads Jolt state
+	// through this, so that no test translation unit has to include a Jolt header.
+	JoltSoftBody3D *get_soft_body_for_tests(RID p_body) const { return soft_body_owner.get_or_null(p_body); }
+#endif
+
 	virtual RID world_boundary_shape_create() override;
 	virtual RID separation_ray_shape_create() override;
 	virtual RID sphere_shape_create() override;
@@ -362,6 +368,10 @@ public:
 
 	virtual void soft_body_pin_point(RID p_body, int p_point_index, bool p_pin) override;
 	virtual bool soft_body_is_point_pinned(RID p_body, int p_point_index) const override;
+
+	virtual bool soft_body_set_extra_property(RID p_body, const StringName &p_name, const Variant &p_value) override;
+	virtual Variant soft_body_get_extra_property(RID p_body, const StringName &p_name) const override;
+	virtual TypedArray<Dictionary> soft_body_get_extra_property_list(RID p_body) const override;
 
 	virtual RID joint_create() override;
 	virtual void joint_clear(RID p_joint) override;

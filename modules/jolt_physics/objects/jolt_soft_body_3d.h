@@ -32,6 +32,9 @@
 
 #include "jolt_object_3d.h"
 
+#include "../capabilities/soft_body_cap_state.h"
+
+#include "core/variant/typed_array.h"
 #include "servers/physics_3d/physics_server_3d.h"
 
 #include <Jolt/Jolt.h>
@@ -44,6 +47,8 @@ class JoltSpace3D;
 
 class JoltSoftBody3D final : public JoltObject3D {
 	HashSet<int> pinned_vertices;
+
+	JoltSoftBodyCapState cap_state;
 
 	LocalVector<int> mesh_to_physics;
 	LocalVector<JoltArea3D *> areas;
@@ -70,6 +75,7 @@ class JoltSoftBody3D final : public JoltObject3D {
 
 	virtual void _add_to_space() override;
 
+	bool _build_mesh_geometry(JPH::SoftBodySharedSettings &r_settings);
 	JPH::SoftBodySharedSettings *_create_shared_settings();
 
 	void _apply_environmental_forces(float p_step);
@@ -164,6 +170,12 @@ public:
 
 	Vector3 get_vertex_position(int p_index);
 	void set_vertex_position(int p_index, const Vector3 &p_position);
+
+	bool set_extra_property(const StringName &p_name, const Variant &p_value);
+	Variant get_extra_property(const StringName &p_name) const;
+	TypedArray<Dictionary> get_extra_property_list() const;
+
+	void clear_extra_properties() { cap_state.clear(); }
 
 	void pin_vertex(int p_index);
 	void unpin_vertex(int p_index);

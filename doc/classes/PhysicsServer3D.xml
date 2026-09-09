@@ -1157,6 +1157,21 @@
 				Returns the drag coefficient of the given soft body.
 			</description>
 		</method>
+		<method name="soft_body_get_extra_property" qualifiers="const">
+			<return type="Variant" />
+			<param index="0" name="body" type="RID" />
+			<param index="1" name="name" type="StringName" />
+			<description>
+				Returns the value of a backend-specific soft body property, or an empty [Variant] if the current backend has no property by that name.
+			</description>
+		</method>
+		<method name="soft_body_get_extra_property_list" qualifiers="const">
+			<return type="Dictionary[]" />
+			<param index="0" name="body" type="RID" />
+			<description>
+				Returns every backend-specific soft body property the current physics backend supports, whether or not it has been set on [param body]. Each entry carries a [code]name[/code], a [code]type[/code] and a [code]usage[/code] bitmask; an entry without [constant @GlobalScope.PROPERTY_USAGE_STORAGE] is read-only. Returns an empty array on a backend with no such properties.
+			</description>
+		</method>
 		<method name="soft_body_get_linear_stiffness" qualifiers="const">
 			<return type="float" />
 			<param index="0" name="body" type="RID" />
@@ -1289,6 +1304,15 @@
 			<description>
 				Sets the drag coefficient of the given soft body. Higher values increase this body's air resistance.
 				[b]Note:[/b] This value is currently unused by Godot's default physics implementation.
+			</description>
+		</method>
+		<method name="soft_body_set_extra_property">
+			<return type="bool" />
+			<param index="0" name="body" type="RID" />
+			<param index="1" name="name" type="StringName" />
+			<param index="2" name="value" type="Variant" />
+			<description>
+				Sets a backend-specific soft body property and returns whether it was accepted. Returns [code]false[/code] without printing anything when the current backend has no property by that name, so a caller can probe for a capability and fall back; a name the backend does recognise but a value it rejects returns [code]false[/code] and prints the reason.
 			</description>
 		</method>
 		<method name="soft_body_set_linear_stiffness">
