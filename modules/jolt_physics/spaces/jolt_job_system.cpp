@@ -163,6 +163,17 @@ JoltJobSystem::JoltJobSystem() :
 	jobs.Init(JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsJobs);
 }
 
+JoltJobSystem::~JoltJobSystem() {
+	// `Job::completed_head` is process-global while `jobs` is per-instance, so a job
+	// still on that list when this instance dies would be handed to the NEXT
+	// instance's free list: `DestructObject` would decode a foreign pointer as one
+	// of its own slots, corrupt the free chain, and read a garbage `task_id`.
+	// Measured with one Jolt server per test case: one leftover job across 67
+	// instances was enough to spin `_reclaim_jobs` forever on a cyclic list,
+	// printing "Invalid Task ID" without bound.
+	_reclaim_jobs();
+}
+
 void JoltJobSystem::pre_step() {
 	// Nothing to do.
 }
