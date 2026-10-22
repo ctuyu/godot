@@ -10,15 +10,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 2
+          ref: 6725459be19bc66e62b6d675c40eefa087af199f
+          fetch-depth: 1
           persist-credentials: false
 
       - name: Verify pristine target sources
         run: |
-          test "$(git rev-parse HEAD^)" = 6725459be19bc66e62b6d675c40eefa087af199f
-          git diff --exit-code HEAD^ HEAD -- thirdparty/harfbuzz
+          test "$(git rev-parse HEAD)" = 6725459be19bc66e62b6d675c40eefa087af199f
+          git diff --exit-code -- thirdparty/harfbuzz
           test ! -e modules/jolt_physics/capabilities/cap_skin.cpp
-          git diff --name-only HEAD^ HEAD
+          sha256sum thirdparty/harfbuzz/src/hb-open-type.hh thirdparty/harfbuzz/src/hb-machinery.hh
 
       - name: Check compilers
         run: |
@@ -102,9 +103,10 @@ jobs:
                           diagnostics = [line for line in run.stderr.splitlines() if "runtime error:" in line]
                           expected = strict and mode == "harfbuzz" and index == 2
                           good = run.returncode == 0 and "ERROR: AddressSanitizer" not in run.stderr
-                          good = good and (len(diagnostics) == 1 if expected else not diagnostics)
+                          # GCC 11 emits two checks for this reference-returning access.
+                          good = good and len(diagnostics) == (2 if expected else 0)
                           if expected:
-                              good = good and any("hb-open-type.hh:559:" in line and "index 2 out of bounds" in line for line in diagnostics)
+                              good = good and all("hb-open-type.hh:559:" in line and "index 2 out of bounds" in line for line in diagnostics)
                           record = {"bounds_strict": strict, "linker": linker, "gc": gc, "mode": mode, "index": index, "exit": run.returncode, "expected_report": expected, "matched": bool(good), "stdout": run.stdout, "stderr": run.stderr}
                           results.append(record)
                           print(json.dumps(record), flush=True)
